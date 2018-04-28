@@ -242,13 +242,13 @@ var get_section_list = function (book_index, out_dir, done_cb)
 		{
 			if (sections.length > 1) // 有多个章节
 			{
-				o_dir = out_dir + '\\' + valid_filename(sections[i].title);
+				o_dir = out_dir + '\\' + valid_filename(sections[i].fullTitle);
 			}
 
 			const section_infos = sections[i].sections;
 			for (let j = 0; j < section_infos.length; j++)
 			{
-				const section_dir = o_dir + '\\' + valid_filename(section_infos[j].title);
+				const section_dir = o_dir + '\\' + valid_filename(section_infos[j].fullTitle);
 
 				section_queue.push({
 					'book_id' : section_infos[j].bookId,
