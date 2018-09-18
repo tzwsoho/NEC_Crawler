@@ -155,7 +155,7 @@ var get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 
 				pic_path = out_dir + '\\' +
 					valid_filename(/\./.test(pic_path[1]) ? pic_path[1] : pic_path[1] + '.jpg');
-				pic_url = pic_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1');
+				pic_url = pic_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1').replace(/(NOSAccessKeyId=[0-9a-fA-F]{32})[0-9]*/i, '$1');
 
 				pic_queue.push({
 					'url' : pic_url,
