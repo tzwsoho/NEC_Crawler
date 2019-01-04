@@ -9,6 +9,7 @@ NetEase Cartoon Crawler，manhua.163.com 爬虫<br>
 依赖库：<br>
 npm install -g colors<br>
 npm install -g mkdirp<br>
+npm install -g get-pixels<br>
 <br>
 <br>
 用法：<br>
