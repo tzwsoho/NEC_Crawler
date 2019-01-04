@@ -1,33 +1,50 @@
 
 'use strict';
 
-const https = require('https');
-const logger = require('./logger.js');
+const request = require('request');
 
-var Requestor = function (url, cb)
+exports.get = function (url, cookies, cb)
 {
-	const req = https.get(url, (res) =>
+	const j = request.jar();
+	if (Array.isArray(cookies))
 	{
-		var bufs = [];
+		for (let cookie of cookies)
+		{
+			try
+			{
+				j.setCookie(cookie, url);
+			}
+			catch (e)
+			{
+				console.error('setCookie %s %s:\n%s', cookie, url, e.stack);
+			}
+		}
+	}
+
+	request.defaults({ jar: j });
+	request.get(url).on('response', (res) =>
+	{
+		var cks = [];
+		const bufs = [];
 		res.on('data', (chunk) =>
 		{
 			bufs.push(chunk);
+
+			const set_cookie = res.headers['set-cookie'];
+			if ('undefined' === typeof(set_cookie))
+			{
+				return;
+			}
+
+			cks = cks.concat(set_cookie);
 		})
 		.on('end', () =>
 		{
-			cb(undefined, Buffer.concat(bufs));
+			cb(undefined, Buffer.concat(bufs), cks);
 		});
 	})
-	.on('timeout', () =>
+	.on('error', (err) =>
 	{
-		cb(new Error('timeout'), undefined);
-	})
-	.on('error', (err_https) =>
-	{
-		cb(err_https, undefined);
+		cb(err, undefined);
 	});
-
-	req.setTimeout(5000);
 };
-
-module.exports = Requestor;

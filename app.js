@@ -1,19 +1,19 @@
 
-'use strict';
+// 'use strict';
 
 const fs = require('fs');
-const https = require('https');
 const mkdirp = require('mkdirp');
+const gp = require('get-pixels');
 const readline = require('readline');
 const logger = require('./logger.js');
 const requestor = require('./requestor.js');
 
-var cfg = undefined;
+var cfg;
 var threads = 0;
-var pic_queue = [];
-var section_queue = [];
 var pic_count = 0;
 var section_count = 0;
+const pic_queue = [];
+const section_queue = [];
 
 process.on('SIGINT', () =>
 {
@@ -28,12 +28,12 @@ process.on('uncaughtException', (err) =>
 	process.exit(1);
 });
 
-var valid_filename = function (in_file)
+const valid_filename = function (in_file)
 {
-	return in_file.replace(/\/|\\|\:|\*|\?|\"|\<|\>|\||[\0-\x1f]/g, '');
+	return in_file.replace(/\/|\\|:|\*|\?|"|<|>|\||[\0-\037]/g, '');
 };
 
-var download_pic = function (url, path, retry_times, done_cb, ...args)
+const download_pic = function (url, path, retry_times, done_cb, ...args)
 {
 	// logger.debug('准备下载图片 %s...', url);
 
@@ -42,7 +42,7 @@ var download_pic = function (url, path, retry_times, done_cb, ...args)
 		if ((err_stat && 'ENOENT' == err_stat.code) || // 文件不存在
 			0 == stat.size) // 文件为空
 		{
-			new requestor(url, (err_req, pic) =>
+			requestor.get(url, undefined, (err_req, pic, cookies) =>
 			{
 				if (err_req)
 				{
@@ -79,7 +79,7 @@ var download_pic = function (url, path, retry_times, done_cb, ...args)
 	});
 };
 
-var OnPicDone = function (thread_id, done_cb)
+const OnPicDone = function (thread_id, done_cb)
 {
 	threads--;
 
@@ -102,7 +102,7 @@ var OnPicDone = function (thread_id, done_cb)
 	}
 };
 
-var process_pic_queue = function (thread_id, done_cb)
+const process_pic_queue = function (thread_id, done_cb)
 {
 	if (threads >= cfg.download_threads)
 	{
@@ -121,10 +121,10 @@ var process_pic_queue = function (thread_id, done_cb)
 	download_pic(q.url, q.path, 1, OnPicDone, thread_id, done_cb);
 };
 
-var get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
+const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_cb)
 {
 	const section_url = 'https://manhua.163.com/reader/' + book_id + '/' + section_id;
-	new requestor(section_url, (err_req, html) =>
+	requestor.get(section_url, cks, (err_req, html, cookies) =>
 	{
 		if (err_req)
 		{
@@ -155,7 +155,9 @@ var get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 
 				pic_path = out_dir + '\\' +
 					valid_filename(/\./.test(pic_path[1]) ? pic_path[1] : pic_path[1] + '.jpg');
-				pic_url = pic_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1');
+				pic_url = pic_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1').replace(/(NOSAccessKeyId=[0-9a-fA-F]{32})[0-9]*/i, '$1');
+
+				// logger.debug('正在队列：%s', pic_url);
 
 				pic_queue.push({
 					'url' : pic_url,
@@ -173,7 +175,7 @@ var get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 	});
 };
 
-var process_section_queue = function (done_cb)
+const process_section_queue = function (done_cb, cks)
 {
 	const q = section_queue.shift();
 	mkdirp(q.out_dir, (err_md) =>
@@ -185,7 +187,7 @@ var process_section_queue = function (done_cb)
 			return;
 		}
 
-		get_section_pic_list(q.book_id, q.section_id, q.out_dir, () =>
+		get_section_pic_list(q.book_id, q.section_id, q.out_dir, cks, () =>
 		{
 			readline.cursorTo(process.stdout, 0);
 			process.stdout.write('各章节目录创建进度 ' +
@@ -193,7 +195,7 @@ var process_section_queue = function (done_cb)
 
 			if (section_queue.length > 0)
 			{
-				setTimeout(process_section_queue, 1, done_cb);
+				setTimeout(process_section_queue, 1, done_cb, cks);
 			}
 			else
 			{
@@ -210,12 +212,12 @@ var process_section_queue = function (done_cb)
 	});
 };
 
-var get_section_list = function (book_index, out_dir, done_cb)
+const get_section_list = function (book_index, out_dir, done_cb, cks)
 {
 	const section_list_url = 'https://manhua.163.com/book/catalog/' +
 		cfg.book_ids[book_index] + '.json' +
 		'?_c=' + new Date().getTime();
-	new requestor(section_list_url, (err_req, html) =>
+	requestor.get(section_list_url, cks, (err_req, html, cookies) =>
 	{
 		if (err_req)
 		{
@@ -260,11 +262,11 @@ var get_section_list = function (book_index, out_dir, done_cb)
 
 		logger.info('开始准备各章节下载目录...');
 		section_count = section_queue.length;
-		process_section_queue(done_cb);
+		process_section_queue(done_cb, cookies);
 	});
 };
 
-var get_next_book = function (book_index)
+const get_next_book = function (book_index, cks)
 {
 	if (book_index >= cfg.book_ids.length)
 	{
@@ -272,18 +274,18 @@ var get_next_book = function (book_index)
 		return;
 	}
 
-	get_book(book_index);
+	get_book(book_index, cks);
 };
 
-var get_book = function (book_index)
+const get_book = function (book_index, cks)
 {
 	const book_url = 'https://manhua.163.com/source/' + cfg.book_ids[book_index];
-	new requestor(book_url, (err_req, html) =>
+	requestor.get(book_url, cks, (err_req, html, cookies) =>
 	{
 		if (err_req)
 		{
 			logger.error('get_title %s error:\n%s', book_url, err_req.stack);
-			get_next_book(book_index + 1);
+			setTimeout(get_next_book, 1, book_index + 1, cookies);
 			return;
 		}
 
@@ -299,9 +301,204 @@ var get_book = function (book_index)
 				const out_dir = cfg.output_dir + '\\' + valid_filename(title[0]);
 				get_section_list(book_index, out_dir, () =>
 				{
-					get_next_book(book_index + 1);
-				});
+					setTimeout(get_next_book, 1, book_index + 1, cookies);
+				}, cookies);
 			}
+		}
+	});
+};
+
+const check_qrcode = function (csrfToken, token, cks)
+{
+	// logger.debug('检查二维码状态...');
+	const check_qrcode_url = 'https://manhua.163.com/login/qrCodeCheck.json' +
+		'?token=' + token +
+		'&status=0' +
+		'&csrfToken=' + csrfToken +
+		'&_=' + Date.now();
+	requestor.get(check_qrcode_url, cks, (err_req, html, cookies) =>
+	{
+		if (err_req)
+		{
+			logger.error('check_qrcode error:\n%s', err_req.stack);
+			return;
+		}
+
+		try
+		{
+			const check_ret = JSON.parse(html.toString());
+			if ('undefined' === typeof(check_ret.code) ||
+				'undefined' === typeof(check_ret.status))
+			{
+				logger.error('check_qrcode json error:\n%s', html.toString());
+				return;
+			}
+
+			if (200 != check_ret.code)
+			{
+				logger.error('check_qrcode code error:\n%d', check_ret.code);
+				return;
+			}
+
+			// logger.debug(check_ret.status);
+			switch (check_ret.status)
+			{
+				case 0: // 未扫描
+				case 1: // 用户已成功扫描二维码，但未确认登录
+					setTimeout(check_qrcode, 2000, csrfToken, token, cks); // 2 秒后继续检查二维码状态
+					break;
+
+				case 2:
+				case -2: // 客户端已确认登录
+					// logger.info('成功登录！%s', JSON.stringify(cookies));
+					logger.info('成功登录！%s', html.toString());
+					get_book(0, cookies);
+					break;
+
+				case -1: // 超时未扫描，重新获取二维码
+				default:
+					get_qrcode_url(csrfToken, cks);
+					break;
+			}
+		}
+		catch (e)
+		{
+			logger.error('check_qrcode exception:\n%s', e.stack);
+		}
+	});
+};
+
+const show_qrcode = function (qrcode_file)
+{
+	// 调用系统默认图片显示软件打开二维码
+	// require('child_process').exec(require('path').resolve(qrcode_file));
+
+	gp(qrcode_file, (err, pixels) =>
+	{
+		const ox = pixels.shape[0];
+		const oy = pixels.shape[1];
+		const depth = pixels.shape[2];
+		const dx = Math.min(ox, process.stdout.columns / 2 - 1); // 一个中文字符占两个格，右边保留一个格
+		const dy = Math.min(oy, process.stdout.rows - 2); // 留 1 行输出提示
+		const dd = Math.min(dx, dy);
+
+		if (dd < 60) // 当前控制台不足以把二维码完全显示出来
+		{
+			require('child_process').exec(require('path').resolve(qrcode_file));
+		}
+		else // 网易漫画的二维码扫描功能太弱，很多微信能扫出来的二维码网易都扫不出来
+		{
+			logger.info('请使用网易漫画客户端扫描二维码登录，操作方法：网易漫画客户端 -> 找漫画 -> 右上角扫描图标');
+
+			for (let y = 0.0; y < oy; y += oy / dd)
+			{
+				const cy = Math.floor(y);
+				for (let x = 0.0; x < ox; x += ox / dd)
+				{
+					const cx = Math.floor(x) * depth;
+					if ((pixels.get(0, cy, cx) + pixels.get(0, cy, cx + 1) + pixels.get(0, cy, cx + 2)) / 3 > 128)
+					{
+						process.stdout.write('\033[1m■\033[0m');
+					}
+					else
+					{
+						process.stdout.write('\033[1m　\033[0m');
+					}
+				}
+
+				process.stdout.write('\n');
+			}
+		}
+	});
+};
+
+const get_qrcode = function (url, cks)
+{
+	logger.debug('获取二维码...');
+	const qrcode_url = 'https://manhua.163.com' + url + '&utm_source=QRcode_login&utm_medium=web';
+	requestor.get(qrcode_url, cks, (err_req, jpg, cookies) =>
+	{
+		if (err_req)
+		{
+			logger.error('get_qrcode error:\n%s', err_req.stack);
+			return;
+		}
+
+		const qrcode_file = './qrCode.jpg';
+		fs.writeFile(qrcode_file, jpg, (err_fs) =>
+		{
+			if (err_fs)
+			{
+				logger.error('get_qrcode writeFile error:\n%s', err_fs.stack);
+				return;
+			}
+
+			show_qrcode(qrcode_file);
+		});
+	});
+};
+
+const get_qrcode_url = function (csrfToken, cks)
+{
+	logger.debug('获取二维码下载链接...');
+	const qrcode_url = 'https://manhua.163.com/login/qrCodeLoginImage.json' +
+		'?csrfToken=' + csrfToken +
+		'&_=' + Date.now();
+	requestor.get(qrcode_url, cks, (err_req, html, cookies) =>
+	{
+		if (err_req)
+		{
+			logger.error('get_qrcode_url error:\n%s', err_req.stack);
+			return;
+		}
+
+		try
+		{
+			const qrcode_info = JSON.parse(html.toString());
+			if ('undefined' === typeof(qrcode_info.url) ||
+				'undefined' === typeof(qrcode_info.code) ||
+				'undefined' === typeof(qrcode_info.token))
+			{
+				logger.error('get_qrcode_url json error:\n%s', html.toString());
+				return;
+			}
+
+			if (200 != qrcode_info.code)
+			{
+				logger.error('get_qrcode_url code error:\n%d', qrcode_info.code);
+				return;
+			}
+
+			get_qrcode(qrcode_info.url, cookies);
+			check_qrcode(csrfToken, qrcode_info.token, cookies);
+		}
+		catch (e)
+		{
+			logger.error('get_qrcode_url exception:\n%s', e.stack);
+		}
+	});
+};
+
+const get_csrftoken = function ()
+{
+	logger.debug('获取 csrfToken...');
+	requestor.get('https://manhua.163.com', undefined, (err_req, html, cookies) =>
+	{
+		if (err_req)
+		{
+			logger.error('get_csrftoken error:\n%s', err_req.stack);
+			return;
+		}
+
+		try
+		{
+			// id="j-csrf" type="hidden" value=""
+			let csrfToken = html.toString().match(/id="j-csrf"\s*type="hidden"\s*value="([\s\S]+?)"/i);
+			get_qrcode_url(csrfToken[1], cookies);
+		}
+		catch (e)
+		{
+			logger.error('get_csrftoken exception:\n%s', e.stack);
 		}
 	});
 };
@@ -310,6 +507,7 @@ var get_book = function (book_index)
 {
 	logger.debug('Netease Cartoon Crawler Starting...');
 	logger.debug('Produced by TZWSOHO 2018');
+	logger.info('提示：建议最大化窗口方便显示完整二维码');
 
 	try
 	{
@@ -321,5 +519,9 @@ var get_book = function (book_index)
 		return;
 	}
 
-	get_book(0);
+	// 二维码登录后获取
+	get_csrftoken();
+
+	// 不登录直接获取
+	// get_book(0, []);
 })();

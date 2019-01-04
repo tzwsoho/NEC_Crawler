@@ -6,7 +6,7 @@ const colors = require('colors');
 
 Date.prototype.Format = function (fmt)
 {
-	var o = {
+	const o = {
 		"M+": this.getMonth() + 1,
 		"d+": this.getDate(),
 		"H+": this.getHours(),
@@ -21,7 +21,7 @@ Date.prototype.Format = function (fmt)
 		fmt = fmt.replace(RegExp.$1, (this.getFullYear() + "").substr(4 - RegExp.$1.length));
 	}
 
-	for (var k in o)
+	for (let k in o)
 	{
 		if (new RegExp("(" + k + ")").test(fmt))
 		{
@@ -43,36 +43,29 @@ colors.setTheme({
 	error : 'red'
 });
 
-var Logger = function ()
-{
-
-};
-
-Logger.log = function (type, fmt, ...args)
+const log = function (type, fmt, ...args)
 {
 	const now = new Date().Format('yyyy-MM-dd HH:mm:ss.ff');
 	const str = util.format(colors['time']('%s ') + colors[type](fmt), now, ...args);
 	console.log(str);
 };
 
-Logger.debug = function (fmt, ...args)
+exports.debug = function (fmt, ...args)
 {
-	Logger.log('debug', fmt, ...args);
+	log('debug', fmt, ...args);
 };
 
-Logger.info = function (fmt, ...args)
+exports.info = function (fmt, ...args)
 {
-	Logger.log('info', fmt, ...args);
+	log('info', fmt, ...args);
 };
 
-Logger.warn = function (fmt, ...args)
+exports.warn = function (fmt, ...args)
 {
-	Logger.log('warn', fmt, ...args);
+	log('warn', fmt, ...args);
 };
 
-Logger.error = function (fmt, ...args)
+exports.error = function (fmt, ...args)
 {
-	Logger.log('error', fmt, ...args);
+	log('error', fmt, ...args);
 };
-
-module.exports = Logger;
