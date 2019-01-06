@@ -2,12 +2,14 @@
 // 'use strict';
 
 const fs = require('fs');
+const util = require('util');
 const mkdirp = require('mkdirp');
 const gp = require('get-pixels');
 const readline = require('readline');
 const logger = require('./logger.js');
 const requestor = require('./requestor.js');
 
+var jar;
 var cfg;
 var threads = 0;
 var pic_count = 0;
@@ -17,8 +19,7 @@ const section_queue = [];
 
 process.on('SIGINT', () =>
 {
-	logger.debug('Bye!!!');
-	process.exit(0);
+	logout();
 });
 
 process.on('uncaughtException', (err) =>
@@ -28,55 +29,24 @@ process.on('uncaughtException', (err) =>
 	process.exit(1);
 });
 
+const logout = function ()
+{
+	const logout_url = 'https://manhua.163.com/logout?redirect=https%3A%2F%2Fmanhua.163.com%2F';
+	requestor.get(logout_url, jar, (err_req, html) =>
+	{
+		if (err_req)
+		{
+			logger.error('logout %s error:\n%s', logout_url, err_req.stack);
+		}
+
+		logger.debug('Bye!!!');
+		process.exit(0);
+	});
+};
+
 const valid_filename = function (in_file)
 {
 	return in_file.replace(/\/|\\|:|\*|\?|"|<|>|\||[\0-\037]/g, '');
-};
-
-const download_pic = function (url, path, retry_times, done_cb, ...args)
-{
-	// logger.debug('准备下载图片 %s...', url);
-
-	fs.stat(path, (err_stat, stat) =>
-	{
-		if ((err_stat && 'ENOENT' == err_stat.code) || // 文件不存在
-			0 == stat.size) // 文件为空
-		{
-			requestor.get(url, undefined, (err_req, pic, cookies) =>
-			{
-				if (err_req)
-				{
-					logger.error('%s 下载失败！', path);
-					if (retry_times <= cfg.retry_times_max)
-					{
-						logger.error('正在开始第 %d 次重试！', retry_times);
-						setTimeout(download_pic, 500, url, path, retry_times + 1, done_cb, ...args);
-					}
-					else
-					{
-						logger.error('重试多次未能下载成功！');
-						done_cb(...args);
-					}
-
-					return;
-				}
-
-				fs.writeFileSync(path, pic, { encoding : 'binary' });
-
-				if (retry_times > 1)
-				{
-					logger.debug('%s 下载成功！', path);
-				}
-
-				done_cb(...args);
-			});
-		}
-		else
-		{
-			// logger.error('%s 已存在！', path);
-			done_cb(...args);
-		}
-	});
 };
 
 const OnPicDone = function (thread_id, done_cb)
@@ -84,7 +54,10 @@ const OnPicDone = function (thread_id, done_cb)
 	threads--;
 
 	readline.cursorTo(process.stdout, 0);
-	process.stdout.write('图片下载进度 ' + ((pic_count - pic_queue.length) * 100 / pic_count).toFixed(2) + '%');
+	process.stdout.write(util.format('图片下载进度 %d%% (%s / %s)',
+		((pic_count - pic_queue.length) * 100 / pic_count).toFixed(2),
+		(pic_count - pic_queue.length).toLocaleString(),
+		pic_count.toLocaleString()));
 
 	if (pic_queue.length > 0)
 	{
@@ -102,9 +75,59 @@ const OnPicDone = function (thread_id, done_cb)
 	}
 };
 
+const download_pic = function (url, path, retry_times, done_cb, ...args)
+{
+	// logger.debug('准备下载图片 %s...', url);
+
+	fs.stat(path, (err_stat, stat) =>
+	{
+		if ((err_stat && 'ENOENT' == err_stat.code) || // 文件不存在
+			0 == stat.size) // 文件为空
+		{
+			const pic_fs = fs.createWriteStream(path);
+			requestor.get(url, undefined, (err, body) =>
+			{
+				if (err)
+				{
+					logger.error('%s 下载失败！', path);
+					if (retry_times <= cfg.retry_times_max)
+					{
+						logger.error('%s 正在开始第 %d 次重试！', path, retry_times);
+						setTimeout(download_pic, 500, url, path, retry_times + 1, done_cb, ...args);
+					}
+					else
+					{
+						logger.error('%s 重试多次未能下载成功！', path);
+						done_cb(...args);
+					}
+				}
+			}).pipe(pic_fs);
+
+			pic_fs.on('error', (err) =>
+			{
+				logger.error(err.stack);
+			}).on('finish', () =>
+			{
+				if (retry_times > 1)
+				{
+					logger.debug('%s 下载成功！', path);
+				}
+
+				// logger.debug('pic %s finish', path);
+				done_cb(...args);
+			});
+		}
+		else
+		{
+			logger.error('%s 已存在！', path);
+			done_cb(...args);
+		}
+	});
+};
+
 const process_pic_queue = function (thread_id, done_cb)
 {
-	if (threads >= cfg.download_threads)
+	if (threads >= cfg.download_threads) // 模拟锁
 	{
 		setTimeout(process_pic_queue, 1, thread_id, done_cb);
 		return;
@@ -121,10 +144,10 @@ const process_pic_queue = function (thread_id, done_cb)
 	download_pic(q.url, q.path, 1, OnPicDone, thread_id, done_cb);
 };
 
-const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_cb)
+const get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 {
 	const section_url = 'https://manhua.163.com/reader/' + book_id + '/' + section_id;
-	requestor.get(section_url, cks, (err_req, html, cookies) =>
+	requestor.get(section_url, jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
@@ -134,7 +157,7 @@ const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_c
 		}
 
 		// window.PG_CONFIG.images = []
-		const images = html.toString().match(/window.PG_CONFIG.images\s*=\s*\[([\s\S]+?)\];/i);
+		const images = html.match(/window.PG_CONFIG.images\s*=\s*\[([\s\S]+?)\];/i);
 		const r_pics = /{([\s\S]+?)}/ig;
 
 		try
@@ -144,7 +167,7 @@ const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_c
 			{
 				if (!p)
 				{
-					logger.warn('本章为付费章节，不能下载！');
+					logger.warn('未付费章节，不能下载！');
 					break;
 				}
 
@@ -164,7 +187,7 @@ const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_c
 					'path' : pic_path
 				});
 			}
-			while (p = r_pics.exec(images[1]));
+			while (Array.isArray(p = r_pics.exec(images[1])));
 		}
 		catch (e)
 		{
@@ -175,7 +198,7 @@ const get_section_pic_list = function (book_id, section_id, out_dir, cks, done_c
 	});
 };
 
-const process_section_queue = function (done_cb, cks)
+const process_section_queue = function (done_cb)
 {
 	const q = section_queue.shift();
 	mkdirp(q.out_dir, (err_md) =>
@@ -187,7 +210,7 @@ const process_section_queue = function (done_cb, cks)
 			return;
 		}
 
-		get_section_pic_list(q.book_id, q.section_id, q.out_dir, cks, () =>
+		get_section_pic_list(q.book_id, q.section_id, q.out_dir, () =>
 		{
 			readline.cursorTo(process.stdout, 0);
 			process.stdout.write('各章节目录创建进度 ' +
@@ -195,7 +218,7 @@ const process_section_queue = function (done_cb, cks)
 
 			if (section_queue.length > 0)
 			{
-				setTimeout(process_section_queue, 1, done_cb, cks);
+				setTimeout(process_section_queue, 1, done_cb);
 			}
 			else
 			{
@@ -212,12 +235,12 @@ const process_section_queue = function (done_cb, cks)
 	});
 };
 
-const get_section_list = function (book_index, out_dir, done_cb, cks)
+const get_section_list = function (book_index, out_dir, done_cb)
 {
 	const section_list_url = 'https://manhua.163.com/book/catalog/' +
 		cfg.book_ids[book_index] + '.json' +
 		'?_c=' + new Date().getTime();
-	requestor.get(section_list_url, cks, (err_req, html, cookies) =>
+	requestor.get(section_list_url, jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
@@ -229,7 +252,7 @@ const get_section_list = function (book_index, out_dir, done_cb, cks)
 		var section_list = undefined;
 		try
 		{
-			section_list = JSON.parse(html.toString());
+			section_list = JSON.parse(html);
 		}
 		catch (e)
 		{
@@ -262,53 +285,54 @@ const get_section_list = function (book_index, out_dir, done_cb, cks)
 
 		logger.info('开始准备各章节下载目录...');
 		section_count = section_queue.length;
-		process_section_queue(done_cb, cookies);
+		process_section_queue(done_cb);
 	});
 };
 
-const get_next_book = function (book_index, cks)
+const get_next_book = function (book_index)
 {
 	if (book_index >= cfg.book_ids.length)
 	{
+		logout();
 		logger.info('所有图书已下载完毕！');
 		return;
 	}
 
-	get_book(book_index, cks);
+	get_book(book_index);
 };
 
-const get_book = function (book_index, cks)
+const get_book = function (book_index)
 {
 	const book_url = 'https://manhua.163.com/source/' + cfg.book_ids[book_index];
-	requestor.get(book_url, cks, (err_req, html, cookies) =>
+	requestor.get(book_url, jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
 			logger.error('get_title %s error:\n%s', book_url, err_req.stack);
-			setTimeout(get_next_book, 1, book_index + 1, cookies);
+			setTimeout(get_next_book, 1, book_index + 1);
 			return;
 		}
 
 		// <title></title>
-		const titles = html.toString().match(/<title>([\s\S]+?)<\/title>/i);
+		const titles = html.match(/<title>([\s\S]+?)<\/title>/i);
 		if (titles && titles[1])
 		{
 			const title = titles[1].split(',');
-			if (title && title.length > 0)
+			if (Array.isArray(title) && title.length > 0)
 			{
 				logger.info('准备下载图书《%s》的章节列表...', title[0]);
 
 				const out_dir = cfg.output_dir + '\\' + valid_filename(title[0]);
 				get_section_list(book_index, out_dir, () =>
 				{
-					setTimeout(get_next_book, 1, book_index + 1, cookies);
-				}, cookies);
+					setTimeout(get_next_book, 1, book_index + 1);
+				});
 			}
 		}
 	});
 };
 
-const check_qrcode = function (csrfToken, token, cks)
+const check_qrcode = function (csrfToken, token)
 {
 	// logger.debug('检查二维码状态...');
 	const check_qrcode_url = 'https://manhua.163.com/login/qrCodeCheck.json' +
@@ -316,7 +340,7 @@ const check_qrcode = function (csrfToken, token, cks)
 		'&status=0' +
 		'&csrfToken=' + csrfToken +
 		'&_=' + Date.now();
-	requestor.get(check_qrcode_url, cks, (err_req, html, cookies) =>
+	requestor.get(check_qrcode_url, jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
@@ -326,11 +350,11 @@ const check_qrcode = function (csrfToken, token, cks)
 
 		try
 		{
-			const check_ret = JSON.parse(html.toString());
+			const check_ret = JSON.parse(html);
 			if ('undefined' === typeof(check_ret.code) ||
 				'undefined' === typeof(check_ret.status))
 			{
-				logger.error('check_qrcode json error:\n%s', html.toString());
+				logger.error('check_qrcode json error:\n%s', html);
 				return;
 			}
 
@@ -345,19 +369,18 @@ const check_qrcode = function (csrfToken, token, cks)
 			{
 				case 0: // 未扫描
 				case 1: // 用户已成功扫描二维码，但未确认登录
-					setTimeout(check_qrcode, 2000, csrfToken, token, cks); // 2 秒后继续检查二维码状态
+					setTimeout(check_qrcode, 2000, csrfToken, token); // 2 秒后继续检查二维码状态
 					break;
 
 				case 2:
 				case -2: // 客户端已确认登录
-					// logger.info('成功登录！%s', JSON.stringify(cookies));
-					logger.info('成功登录！%s', html.toString());
-					get_book(0, cookies);
+					logger.info('成功登录！');
+					get_book(0);
 					break;
 
 				case -1: // 超时未扫描，重新获取二维码
 				default:
-					get_qrcode_url(csrfToken, cks);
+					get_qrcode_url(csrfToken);
 					break;
 			}
 		}
@@ -370,81 +393,78 @@ const check_qrcode = function (csrfToken, token, cks)
 
 const show_qrcode = function (qrcode_file)
 {
-	// 调用系统默认图片显示软件打开二维码
-	// require('child_process').exec(require('path').resolve(qrcode_file));
-
-	gp(qrcode_file, (err, pixels) =>
+	// if (true)
+	if ('undefined' === typeof(gp))
 	{
-		const ox = pixels.shape[0];
-		const oy = pixels.shape[1];
-		const depth = pixels.shape[2];
-		const dx = Math.min(ox, process.stdout.columns / 2 - 1); // 一个中文字符占两个格，右边保留一个格
-		const dy = Math.min(oy, process.stdout.rows - 2); // 留 1 行输出提示
-		const dd = Math.min(dx, dy);
-
-		if (dd < 60) // 当前控制台不足以把二维码完全显示出来
+		// 调用系统默认图片显示软件打开二维码
+		require('child_process').exec(require('path').resolve(qrcode_file));
+	}
+	else
+	{
+		gp(qrcode_file, (err, pixels) =>
 		{
-			require('child_process').exec(require('path').resolve(qrcode_file));
-		}
-		else // 网易漫画的二维码扫描功能太弱，很多微信能扫出来的二维码网易都扫不出来
-		{
-			logger.info('请使用网易漫画客户端扫描二维码登录，操作方法：网易漫画客户端 -> 找漫画 -> 右上角扫描图标');
+			const ox = pixels.shape[0];
+			const oy = pixels.shape[1];
+			const depth = pixels.shape[2];
+			const dx = Math.min(ox, process.stdout.columns / 2 - 1); // 一个中文字符占两个格，右边保留一个格
+			const dy = Math.min(oy, process.stdout.rows - 2); // 留 1 行输出提示
+			const dd = Math.min(dx, dy);
 
-			for (let y = 0.0; y < oy; y += oy / dd)
+			if (dd < 60) // 当前控制台不足以把二维码完全显示出来
 			{
-				const cy = Math.floor(y);
-				for (let x = 0.0; x < ox; x += ox / dd)
-				{
-					const cx = Math.floor(x) * depth;
-					if ((pixels.get(0, cy, cx) + pixels.get(0, cy, cx + 1) + pixels.get(0, cy, cx + 2)) / 3 > 128)
-					{
-						process.stdout.write('\033[1m■\033[0m');
-					}
-					else
-					{
-						process.stdout.write('\033[1m　\033[0m');
-					}
-				}
-
-				process.stdout.write('\n');
+				require('child_process').exec(require('path').resolve(qrcode_file));
 			}
-		}
-	});
+			else // 网易漫画的二维码扫描功能太弱，很多微信能扫出来的二维码网易都扫不出来
+			{
+				logger.info('请使用网易漫画客户端扫描二维码登录，操作方法：网易漫画客户端 -> 找漫画 -> 右上角扫描图标');
+
+				for (let y = 0.0; y < oy; y += oy / dd)
+				{
+					const cy = Math.floor(y);
+					for (let x = 0.0; x < ox; x += ox / dd)
+					{
+						const cx = Math.floor(x) * depth;
+						if ((pixels.get(0, cy, cx) + pixels.get(0, cy, cx + 1) + pixels.get(0, cy, cx + 2)) / 3 > 128)
+						{
+							process.stdout.write('\033[1m■\033[0m');
+						}
+						else
+						{
+							process.stdout.write('\033[1m　\033[0m');
+						}
+					}
+
+					process.stdout.write('\n');
+				}
+			}
+		});
+	}
 };
 
-const get_qrcode = function (url, cks)
+const get_qrcode = function (url, csrfToken, token)
 {
 	logger.debug('获取二维码...');
+	const qrcode_file = './qrCode.jpg';
 	const qrcode_url = 'https://manhua.163.com' + url + '&utm_source=QRcode_login&utm_medium=web';
-	requestor.get(qrcode_url, cks, (err_req, jpg, cookies) =>
+	const qrcode_fs = fs.createWriteStream(qrcode_file);
+	requestor.get(qrcode_url, jar, () =>
 	{
-		if (err_req)
-		{
-			logger.error('get_qrcode error:\n%s', err_req.stack);
-			return;
-		}
+	}).pipe(qrcode_fs);
 
-		const qrcode_file = './qrCode.jpg';
-		fs.writeFile(qrcode_file, jpg, (err_fs) =>
-		{
-			if (err_fs)
-			{
-				logger.error('get_qrcode writeFile error:\n%s', err_fs.stack);
-				return;
-			}
-
-			show_qrcode(qrcode_file);
-		});
+	qrcode_fs.on('finish', () =>
+	{
+		show_qrcode(qrcode_file);
+		check_qrcode(csrfToken, token);
 	});
 };
 
-const get_qrcode_url = function (csrfToken, cks)
+const get_qrcode_url = function (csrfToken)
 {
 	logger.debug('获取二维码下载链接...');
 	const qrcode_url = 'https://manhua.163.com/login/qrCodeLoginImage.json' +
 		'?csrfToken=' + csrfToken +
 		'&_=' + Date.now();
-	requestor.get(qrcode_url, cks, (err_req, html, cookies) =>
+	requestor.get(qrcode_url, jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
@@ -454,12 +474,12 @@ const get_qrcode_url = function (csrfToken, cks)
 
 		try
 		{
-			const qrcode_info = JSON.parse(html.toString());
+			const qrcode_info = JSON.parse(html);
 			if ('undefined' === typeof(qrcode_info.url) ||
 				'undefined' === typeof(qrcode_info.code) ||
 				'undefined' === typeof(qrcode_info.token))
 			{
-				logger.error('get_qrcode_url json error:\n%s', html.toString());
+				logger.error('get_qrcode_url json error:\n%s', html);
 				return;
 			}
 
@@ -469,8 +489,7 @@ const get_qrcode_url = function (csrfToken, cks)
 				return;
 			}
 
-			get_qrcode(qrcode_info.url, cookies);
-			check_qrcode(csrfToken, qrcode_info.token, cookies);
+			get_qrcode(qrcode_info.url, csrfToken, qrcode_info.token);
 		}
 		catch (e)
 		{
@@ -481,8 +500,10 @@ const get_qrcode_url = function (csrfToken, cks)
 
 const get_csrftoken = function ()
 {
-	logger.debug('获取 csrfToken...');
-	requestor.get('https://manhua.163.com', undefined, (err_req, html, cookies) =>
+	logger.info('提示：建议最大化窗口方便显示完整二维码');
+
+	// logger.debug('获取 csrfToken...');
+	requestor.get('https://manhua.163.com', jar, (err_req, html) =>
 	{
 		if (err_req)
 		{
@@ -493,8 +514,8 @@ const get_csrftoken = function ()
 		try
 		{
 			// id="j-csrf" type="hidden" value=""
-			let csrfToken = html.toString().match(/id="j-csrf"\s*type="hidden"\s*value="([\s\S]+?)"/i);
-			get_qrcode_url(csrfToken[1], cookies);
+			let csrfToken = html.match(/id="j-csrf"\s*type="hidden"\s*value="([\s\S]+?)"/i);
+			get_qrcode_url(csrfToken[1]);
 		}
 		catch (e)
 		{
@@ -507,10 +528,10 @@ const get_csrftoken = function ()
 {
 	logger.debug('Netease Cartoon Crawler Starting...');
 	logger.debug('Produced by TZWSOHO 2018');
-	logger.info('提示：建议最大化窗口方便显示完整二维码');
 
 	try
 	{
+		jar = requestor.jar();
 		cfg = require('./config.json');
 	}
 	catch (e)
@@ -523,5 +544,5 @@ const get_csrftoken = function ()
 	get_csrftoken();
 
 	// 不登录直接获取
-	// get_book(0, []);
+	// get_book(0);
 })();

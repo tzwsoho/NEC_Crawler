@@ -3,48 +3,16 @@
 
 const request = require('request');
 
-exports.get = function (url, cookies, cb)
+exports.jar = function ()
 {
-	const j = request.jar();
-	if (Array.isArray(cookies))
-	{
-		for (let cookie of cookies)
-		{
-			try
-			{
-				j.setCookie(cookie, url);
-			}
-			catch (e)
-			{
-				console.error('setCookie %s %s:\n%s', cookie, url, e.stack);
-			}
-		}
-	}
+	return request.jar();
+};
 
-	request.defaults({ jar: j });
-	request.get(url).on('response', (res) =>
+exports.get = function (url, jar, cb)
+{
+	request.defaults({ jar: true });
+	return request({ url: url, jar: jar, timeout: 5000 }, (err, res, body) =>
 	{
-		var cks = [];
-		const bufs = [];
-		res.on('data', (chunk) =>
-		{
-			bufs.push(chunk);
-
-			const set_cookie = res.headers['set-cookie'];
-			if ('undefined' === typeof(set_cookie))
-			{
-				return;
-			}
-
-			cks = cks.concat(set_cookie);
-		})
-		.on('end', () =>
-		{
-			cb(undefined, Buffer.concat(bufs), cks);
-		});
-	})
-	.on('error', (err) =>
-	{
-		cb(err, undefined);
+		cb(err, body);
 	});
 };
