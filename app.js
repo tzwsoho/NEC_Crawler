@@ -85,7 +85,7 @@ const download_pic = function (url, path, retry_times, done_cb, ...args)
 			0 == stat.size) // 文件为空
 		{
 			const pic_fs = fs.createWriteStream(path);
-			requestor.get(url, undefined, (err, body) =>
+			requestor.get(url, undefined, (err) =>
 			{
 				if (err)
 				{
@@ -167,25 +167,64 @@ const get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 			{
 				if (!p)
 				{
-					logger.warn('未付费章节，不能下载！');
+					// <title></title>
+					let section_title = '';
+					const titles = html.match(/<title>([\s\S]+?)<\/title>/i);
+					if (titles && titles[1])
+					{
+						const title = titles[1].split(',');
+						if (Array.isArray(title) && title.length > 1)
+						{
+							section_title = title[0] + ' - ' + title[1];
+						}
+					}
+
+					logger.warn('章节“%s”未付费，不能下载！', section_title);
 					break;
 				}
 
-				// titles: ""
-				let pic_path = p[1].match(/title\s*:\s*"([\s\S]+?)",/i);
 				// url: window.IS_SUPPORT_WEBP ? "" : ""
-				let pic_url = p[1].match(/url\s*:[\s\S]+?\?\s*"[\s\S]+?"\s*:\s*"([\s\S]+?)",/i);
+				let webp_url = p[1].match(/url\s*:[\s\S]+?\?\s*"([\s\S]+?)"\s*:\s*"[\s\S]+?",/i);
+				webp_url = webp_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1').replace(/(NOSAccessKeyId=[0-9a-fA-F]{32})[0-9]*/i, '$1');
+				let jpg_url = p[1].match(/url\s*:[\s\S]+?\?\s*"[\s\S]+?"\s*:\s*"([\s\S]+?)",/i);
+				jpg_url = jpg_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1').replace(/(NOSAccessKeyId=[0-9a-fA-F]{32})[0-9]*/i, '$1');
 
+				// title: ""
+				let pic_path = p[1].match(/title\s*:\s*"([\s\S]+?)",/i);
 				pic_path = out_dir + '\\' +
-					valid_filename(/\./.test(pic_path[1]) ? pic_path[1] : pic_path[1] + '.jpg');
-				pic_url = pic_url[1].replace(/([\s\S]+?%3D)[0-9]*/i, '$1').replace(/(NOSAccessKeyId=[0-9a-fA-F]{32})[0-9]*/i, '$1');
+					valid_filename(/\./.test(pic_path[1]) ? pic_path[1] : pic_path[1]);
 
-				// logger.debug('正在队列：%s', pic_url);
+				if ('webp' === cfg.pic_type.toLowerCase()) // WEBP 格式
+				{
+					// logger.debug('正在队列：%s', webp_url);
 
-				pic_queue.push({
-					'url' : pic_url,
-					'path' : pic_path
-				});
+					pic_queue.push({
+						'url' : webp_url,
+						'path' : pic_path + '.webp'
+					});
+				}
+				else if ('both' === cfg.pic_type.toLowerCase()) // 两种格式都下载
+				{
+					// logger.debug('正在队列：%s', webp_url);
+					// logger.debug('正在队列：%s', jpg_url);
+
+					pic_queue.push({
+						'url' : jpg_url,
+						'path' : pic_path + '.jpg'
+					}, {
+						'url' : webp_url,
+						'path' : pic_path + '.webp'
+					});
+				}
+				else // 默认只下载 JPG 格式
+				{
+					// logger.debug('正在队列：%s', jpg_url);
+
+					pic_queue.push({
+						'url' : jpg_url,
+						'path' : pic_path + '.jpg'
+					});
+				}
 			}
 			while (Array.isArray(p = r_pics.exec(images[1])));
 		}
@@ -198,39 +237,50 @@ const get_section_pic_list = function (book_id, section_id, out_dir, done_cb)
 	});
 };
 
+const download_section = function (book_id, section_id, out_dir, done_cb)
+{
+	get_section_pic_list(book_id, section_id, out_dir, () =>
+	{
+		readline.cursorTo(process.stdout, 0);
+		process.stdout.write(util.format('各章节目录创建进度 %d%% (%s / %s)',
+			((section_count - section_queue.length) * 100 / section_count).toFixed(2),
+			(section_count - section_queue.length).toLocaleString(),
+			section_count.toLocaleString()));
+
+		if (section_queue.length > 0)
+		{
+			setTimeout(process_section_queue, 1, done_cb);
+		}
+		else
+		{
+			readline.cursorTo(process.stdout, 0);
+			logger.info('所有章节目录已准备完成，开始下载图片...');
+
+			pic_count = pic_queue.length;
+			for (let i = 0; i < cfg.download_threads; i++)
+			{
+				setTimeout(process_pic_queue, 1, i + 1, done_cb);
+			}
+		}
+	});
+};
+
 const process_section_queue = function (done_cb)
 {
 	const q = section_queue.shift();
-	mkdirp(q.out_dir, (err_md) =>
+	fs.exists(q.out_dir, (exists) =>
 	{
-		if (err_md)
+		const out_dir = q.out_dir + (exists ? '\\' + q.section_id : '');
+		mkdirp(out_dir, (err_mp) =>
 		{
-			logger.error('process_section_queue mkdir error:\n%s', err_md.stack);
-			setTimeout(process_section_queue, 1, done_cb);
-			return;
-		}
-
-		get_section_pic_list(q.book_id, q.section_id, q.out_dir, () =>
-		{
-			readline.cursorTo(process.stdout, 0);
-			process.stdout.write('各章节目录创建进度 ' +
-				((section_count - section_queue.length) * 100 / section_count).toFixed(2) + '%');
-
-			if (section_queue.length > 0)
+			if (err_mp)
 			{
+				logger.error('process_section_queue mkdirp 2 error:\n%s', err_mp.stack);
 				setTimeout(process_section_queue, 1, done_cb);
+				return;
 			}
-			else
-			{
-				readline.cursorTo(process.stdout, 0);
-				logger.info('所有章节目录已准备完成！');
 
-				pic_count = pic_queue.length;
-				for (let i = 0; i < cfg.download_threads; i++)
-				{
-					setTimeout(process_pic_queue, 1, i + 1, done_cb);
-				}
-			}
+			download_section(q.book_id, q.section_id, out_dir, done_cb);
 		});
 	});
 };

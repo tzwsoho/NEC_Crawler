@@ -37,3 +37,17 @@ npm install -g get-pixels<br>
 <br>
 ![将二维码置于扫描框中央能提高成功率](https://github.com/tzwsoho/NEC_Crawler/raw/master/qrCode_Scan.jpg)<br>
 将二维码置于扫描框中央能提高成功率<br>
+<br>
+*******************************************************************************<br>
+<br>
+2019-01-11 更新日志：<br>
+<br>
+应网友YUIIUY要求增加了下载格式配置，重名章节图片下载功能<br>
+config.json新增pic_type字段，可以设置为<br>
+webp：只下载 webp 高清格式<br>
+jpg：（默认）只下载 jpg 压缩格式<br>
+both：以上两种格式都下载<br>
+<br>
+注：在遇到重名章节时，如果当前章节的目录已经存在<br>
+现在的处理方式是在这个目录下创建一个以章节ID命名的目录<br>
+然后再把图片下载到这个新的目录下面<br>
